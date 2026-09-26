@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'ubuntu-22.04' # Linux: gera .deb, .rpm e .AppImage
+            args: ''
+          - platform: 'macos-latest' # macOS: gera .dmg (universal: Intel + Apple Silicon)
+            args: '--target universal-apple-darwin'
+          - platform: 'windows-latest' # Windows: gera instaladores .exe (NSIS) e .msi
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências do sistema (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'yarn'
+
+      - name: Configurar Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS universal precisa dos dois targets
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache do Rust (compilação mais rápida)
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Instalar dependências do frontend
+        run: yarn install --frozen-lockfile
+
+      - name: Build e publicação no Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Rscovery v__VERSION__'
+          releaseBody: |
+            ## Rscovery v__VERSION__
+
+            Aplicativo de recuperação de arquivos por magic bytes, feito com Tauri (Rust + React).
+
+            ### 📦 Downloads
+
+            | Sistema | Arquivo |
+            |---|---|
+            | 🐧 Linux (Debian/Ubuntu) | `rscovery_*_amd64.deb` |
+            | 🐧 Linux (qualquer distro) | `rscovery_*_amd64.AppImage` |
+            | 🐧 Linux (Fedora/RHEL) | `rscovery-*.x86_64.rpm` |
+            | 🍎 macOS (Intel e Apple Silicon) | `rscovery_*_universal.dmg` |
+            | 🪟 Windows (instalador) | `rscovery_*_x64-setup.exe` |
+            | 🪟 Windows (MSI) | `rscovery_*_x64_en-US.msi` |
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
