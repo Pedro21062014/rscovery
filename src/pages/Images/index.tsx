@@ -16,6 +16,7 @@ export default function Images() {
   const type = queryParams.get("type") as "png" | "jpeg";
 
   const [loadingScan, setLoadingScan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [images, setImages] = useState<string[]>([]);
 
   const [progress, setProgress] = useState(0);
@@ -42,12 +43,15 @@ export default function Images() {
   }, []);
 
   const handleStartScan = async () => {
+    setError(null);
+    setLoadingScan(true);
     try {
-      setLoadingScan(true);
       const invokeName = type === "jpeg" ? "find_jpeg" : "find_png";
       await invoke(invokeName, { path: id });
     } catch (err) {
       console.error("Error starting scan:", err);
+      setError(String(err));
+      setLoadingScan(false);
     }
   };
 
@@ -61,6 +65,21 @@ export default function Images() {
           📷 Disk "{id}" ({type})
         </h1>
       </header>
+
+      {error && (
+        <div
+          style={{
+            background: "#3a1212",
+            border: "1px solid #ff5252",
+            padding: "16px",
+            borderRadius: "8px",
+            marginTop: "16px",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          ❌ {error}
+        </div>
+      )}
 
       {loadingScan ? (
         <div>

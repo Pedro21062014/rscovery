@@ -22,10 +22,6 @@ const scanOptions = [
     route: "/text?id=",
   },
   {
-    name: "📹 MP4",
-    route: "/file?type=mp4&id=",
-  },
-  {
     name: "🔍 View Blocks",
     route: "/blocks?id=",
     big: true,

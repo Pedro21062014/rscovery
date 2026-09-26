@@ -78,6 +78,16 @@ jobs:
             | 🍎 macOS (Intel e Apple Silicon) | `rscovery_*_universal.dmg` |
             | 🪟 Windows (instalador) | `rscovery_*_x64-setup.exe` |
             | 🪟 Windows (MSI) | `rscovery_*_x64_en-US.msi` |
+
+            ### ⚠️ Permissões (importante)
+
+            O Rscovery lê o disco diretamente (raw disk) e por isso precisa ser
+            executado com permissões elevadas, senão o scan não inicia:
+
+            - 🐧 **Linux (AppImage):** `sudo ./rscovery_x.y.z_amd64.AppImage`
+            - 🐧 **Linux (deb, após instalar):** `sudo rscovery`
+            - 🪟 **Windows:** clique com o botão direito → **Executar como administrador**
+            - 🍎 **macOS:** abra pelo terminal com `sudo /Applications/rscovery.app/Contents/MacOS/rscovery`
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

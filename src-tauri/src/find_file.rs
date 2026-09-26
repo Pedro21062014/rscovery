@@ -16,7 +16,7 @@ use serde::Serialize;
 use sha256::digest;
 use tauri::Emitter;
 
-use crate::analyze_blocks::get_block_device_size_gb;
+use crate::analyze_blocks::{friendly_open_error, get_block_device_size_gb, normalize_device_path};
 
 /// All default signatures
 /// When `is_image`, it'll send the image as b64 to the frontend, and
@@ -107,7 +107,8 @@ impl<'s> MagicByte<'s> {
         path: &str,
         max: i32,
     ) -> Result<(), String> {
-        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let open_path = normalize_device_path(path);
+        let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
 
         let total_size = get_block_device_size_gb(path).map_err(|e| e.to_string())?;
 
@@ -174,20 +175,27 @@ impl<'s> MagicByte<'s> {
                                     "../found/{}_{count}.{}",
                                     self.extension, self.extension
                                 );
-                                fs::write(&filename, &file_buffer)
-                                    .expect("Error while saving file");
+                                if let Some(parent) = std::path::Path::new(&filename).parent() {
+                                    let _ = fs::create_dir_all(parent);
+                                }
+                                match fs::write(&filename, &file_buffer) {
+                                    Ok(()) => {
+                                        app_handle
+                                            .emit(
+                                                "file-found",
+                                                FileFind {
+                                                    path: filename,
+                                                    size: file_buffer.len() as f64 / 1024.0,
+                                                },
+                                            )
+                                            .unwrap();
 
-                                app_handle
-                                    .emit(
-                                        "file-found",
-                                        FileFind {
-                                            path: filename,
-                                            size: file_buffer.len() as f64 / 1024.0,
-                                        },
-                                    )
-                                    .unwrap();
-
-                                count += 1;
+                                        count += 1;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error while saving {}: {}", filename, e);
+                                    }
+                                }
                             }
                         }
 
@@ -253,7 +261,8 @@ pub fn extract_txt(
     use std::fs::File;
     use std::io::Read;
 
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let open_path = normalize_device_path(path);
+    let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
     let total_size = get_block_device_size_gb(path).map_err(|e| e.to_string())?;
 
     let mut buffer = vec![0u8; 32 * 1024 * 1024]; // 32 MB buffer

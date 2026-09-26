@@ -16,6 +16,7 @@ export default function Blocks() {
   const id = queryParams.get("id");
 
   const [loadingScan, setLoadingScan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [scannedSize, setScannedSize] = useState<ScannedData>({
     current: 0,
     total: 0,
@@ -47,12 +48,14 @@ export default function Blocks() {
   }, []);
 
   const handleStartScan = async () => {
+    setError(null);
+    setLoadingScan(true);
     try {
-      // console.log(id);
-      setLoadingScan(true);
       await invoke("analyze_blocks", { path: id });
     } catch (err) {
       console.error("Error starting scan:", err);
+      setError(String(err));
+      setLoadingScan(false);
     }
   };
 
@@ -64,6 +67,21 @@ export default function Blocks() {
         </div>
         <h1>Disk "{id}"</h1>
       </header>
+
+      {error && (
+        <div
+          style={{
+            background: "#3a1212",
+            border: "1px solid #ff5252",
+            padding: "16px",
+            borderRadius: "8px",
+            marginTop: "16px",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          ❌ {error}
+        </div>
+      )}
 
       {loadingScan ? (
         <div>

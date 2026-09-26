@@ -10,6 +10,7 @@ export default function Text() {
   const id = queryParams.get("id");
 
   const [loadingScan, setLoadingScan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [texts, setTexts] = useState<string[]>([]);
 
   const [progress, setProgress] = useState(0);
@@ -38,8 +39,9 @@ export default function Text() {
   }, []);
 
   const handleStartScan = async () => {
+    setError(null);
+    setLoadingScan(true);
     try {
-      setLoadingScan(true);
       const invokeName = "find_txt";
 
       const blacklistParsed = blacklist.split(",").map((a) => a.trim());
@@ -53,6 +55,8 @@ export default function Text() {
       });
     } catch (err) {
       console.error("Error starting scan:", err);
+      setError(String(err));
+      setLoadingScan(false);
     }
   };
 
@@ -83,6 +87,21 @@ export default function Text() {
           ></textarea>
         </div>
       </div>
+
+      {error && (
+        <div
+          style={{
+            background: "#3a1212",
+            border: "1px solid #ff5252",
+            padding: "16px",
+            borderRadius: "8px",
+            marginTop: "16px",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          ❌ {error}
+        </div>
+      )}
 
       {loadingScan ? (
         <div>

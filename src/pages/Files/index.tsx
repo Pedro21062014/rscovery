@@ -28,9 +28,10 @@ export default function Files() {
   const queryParams = new URLSearchParams(search);
 
   const id = queryParams.get("id");
-  const type = queryParams.get("type") as "pdf" | "zip" | "mp4";
+  const type = queryParams.get("type") as "pdf" | "zip";
 
   const [loadingScan, setLoadingScan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [files, setFiles] = useState<FilePayload[]>([]);
 
   const [progress, setProgress] = useState(0);
@@ -58,16 +59,15 @@ export default function Files() {
   }, []);
 
   const handleStartScan = async () => {
+    setError(null);
+    setLoadingScan(true);
     try {
-      setLoadingScan(true);
-      const invokeName = type === "pdf" 
-        ? "find_pdf" 
-        : type === "mp4" 
-          ? "find_mp4" 
-          : "find_zip";
+      const invokeName = type === "pdf" ? "find_pdf" : "find_zip";
       await invoke(invokeName, { path: id });
     } catch (err) {
       console.error("Error starting scan:", err);
+      setError(String(err));
+      setLoadingScan(false);
     }
   };
 
@@ -79,6 +79,21 @@ export default function Files() {
         </div>
         <h1>📄 Disk "{id}" ({type})</h1>
       </header>
+
+      {error && (
+        <div
+          style={{
+            background: "#3a1212",
+            border: "1px solid #ff5252",
+            padding: "16px",
+            borderRadius: "8px",
+            marginTop: "16px",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          ❌ {error}
+        </div>
+      )}
 
       {loadingScan ? (
         <div>

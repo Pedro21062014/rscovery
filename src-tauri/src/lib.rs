@@ -33,6 +33,26 @@ fn list_disks() -> Vec<DiskInfo> {
         vec
     };
 
+    #[cfg(target_os = "macos")]
+    let mounts = {
+        // macOS has no /proc/mounts; parse the output of `mount`:
+        // "/dev/disk3s1s1 on / (apfs, local, journaled)"
+        let mut vec = Vec::new();
+        if let Ok(out) = std::process::Command::new("mount").output() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let mut parts = line.splitn(4, ' ');
+                let dev = parts.next().unwrap_or("").to_string();
+                let on = parts.next().unwrap_or("");
+                let mp = parts.next().unwrap_or("").to_string();
+                if on == "on" && dev.starts_with("/dev/") && !mp.is_empty() {
+                    vec.push((dev, mp));
+                }
+            }
+        }
+        vec
+    };
+
     let mut disks = Disks::new_with_refreshed_list();
     disks.refresh_list();
 
@@ -42,8 +62,9 @@ fn list_disks() -> Vec<DiskInfo> {
             let mount = disk.mount_point().to_string_lossy().to_string();
             let size_mb = disk.total_space() / 1024 / 1024;
 
-            // Em Linux, mapeia o ponto de montagem para o dispositivo (ex.: /dev/sda1)
-            #[cfg(target_os = "linux")]
+            // Em Linux/macOS, mapeia o ponto de montagem para o dispositivo
+            // (ex.: /dev/sda1 no Linux, /dev/disk3s1s1 no macOS)
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let device = {
                 if let Some((dev, _mp)) = mounts.iter().find(|(_dev, mp)| mp == &mount) {
                     dev.clone()
@@ -61,8 +82,8 @@ fn list_disks() -> Vec<DiskInfo> {
                 }
             };
 
-            // Em Windows/macOS, usa o nome do volume/disco (com fallback para o ponto de montagem)
-            #[cfg(not(target_os = "linux"))]
+            // No Windows, usa o nome do volume/disco (com fallback para o ponto de montagem)
+            #[cfg(target_os = "windows")]
             let device = {
                 let name = disk.name().to_string_lossy().to_string();
                 if name.is_empty() { mount.clone() } else { name }
@@ -82,6 +103,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             list_disks,
+            analyze_blocks::check_root,
             analyze_blocks::analyze_blocks,
             find_file::find_jpeg,
             find_file::find_png,
