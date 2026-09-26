@@ -4,9 +4,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 interface ImagePayload {
-  iteration: number;
-  base64: string;
+  base64: string; // small thumbnail (the full file is saved on disk)
+  path: string;
+  size: number; // KB
 }
+
+// How many previews to render at once (the list keeps growing in memory
+// with tiny thumbnails, but the DOM stays light).
+const MAX_RENDERED = 200;
 
 export default function Images() {
   const { search } = useLocation();
@@ -17,21 +22,19 @@ export default function Images() {
 
   const [loadingScan, setLoadingScan] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [images, setImages] = useState<string[]>([]);
+  const [images, setImages] = useState<ImagePayload[]>([]);
 
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
 
   useEffect(() => {
     const unlistenFound = listen("file-found", (event) => {
-      const progress = event.payload as ImagePayload;
-      console.log(progress);
-      setImages((prev) => [...prev, progress.base64]);
+      const payload = event.payload as ImagePayload;
+      setImages((prev) => [...prev, payload]);
     });
 
     const unlistenProgress = listen("file-progress", (event) => {
       const progress = event.payload as { current: number; total: number };
-      console.log(progress);
       setProgress(progress.current);
       setTotal(progress.total);
     });
@@ -84,19 +87,47 @@ export default function Images() {
       {loadingScan ? (
         <div>
           <p>
-            {(progress / 1024).toFixed(2)}/{(total / 1024).toFixed(2)} (
-            {images.length})
+            {(progress / 1024).toFixed(2)}/{(total / 1024).toFixed(2)} GB (
+            {images.length} found)
           </p>
+
+          {images.length > 0 && (
+            <p style={{ fontSize: 13, color: "rgb(180, 180, 180)" }}>
+              Full-size images are saved on disk — previews below are
+              thumbnails.
+            </p>
+          )}
+
           <div className="imageGrid">
-            {images.map((img, index) => (
-              <img
-                key={index}
-                src={`data:image/jpeg;base64,${img}`}
-                alt={`Recovered ${index}`}
-                className="recoveredImage"
-              />
+            {images.slice(0, MAX_RENDERED).map((img, index) => (
+              <div key={index} title={img.path} style={{ display: "block", padding: 4 }}>
+                <img
+                  src={`data:image/jpeg;base64,${img.base64}`}
+                  alt={`Recovered ${index}`}
+                  className="recoveredImage"
+                />
+              </div>
             ))}
           </div>
+
+          {images.length > MAX_RENDERED && (
+            <p style={{ fontSize: 13, color: "rgb(180, 180, 180)" }}>
+              Showing the first {MAX_RENDERED} previews of {images.length}{" "}
+              recovered images (all of them are saved on disk).
+            </p>
+          )}
+
+          {images.length > 0 && (
+            <p
+              style={{
+                fontSize: 13,
+                color: "rgb(180, 180, 180)",
+                wordBreak: "break-all",
+              }}
+            >
+              📁 Saved to: {images[0].path}
+            </p>
+          )}
         </div>
       ) : (
         <div style={{ marginTop: "24px", textAlign: "center" }}>

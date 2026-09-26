@@ -109,6 +109,7 @@ pub fn run() {
             find_file::find_png,
             find_file::find_pdf,
             find_file::find_zip,
+            find_file::find_mp4,
             find_file::find_txt,
         ])
         .run(tauri::generate_context!())

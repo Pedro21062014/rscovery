@@ -1,15 +1,18 @@
-// User sends the valid blocks indexes (32MB each)
-// We need to return the absolute position (in HEX) of the specific
-// magic byte.
+// User sends the device path and we scan the raw bytes looking for known
+// magic byte signatures, carving the files out of the stream.
+//
+// Memory strategy:
+// - Images (JPEG/PNG): buffered in memory only until the end signature
+//   (capped at `max_size`), validated, saved to disk, and only a small
+//   base64 thumbnail is sent to the frontend.
+// - PDF/ZIP: streamed straight to a temp file on disk while scanning,
+//   so RAM usage stays constant no matter how big the file is.
+// - MP4: carved by walking the MP4 box structure (ftyp/moov/mdat...) and
+//   copied to disk in chunks — also constant RAM.
 
-// For now, the user does not specify custom magic bytes, but needs to
-// select from our list.
-
-use std::io::{Read, Seek, SeekFrom};
-use std::{
-    collections::HashSet,
-    fs::{self, File},
-};
+use std::collections::{HashSet, VecDeque};
+use std::fs::{self, File};
+use std::io::{BufWriter, Read, Seek, SeekFrom};
 
 use base64::Engine;
 use serde::Serialize;
@@ -18,10 +21,16 @@ use tauri::Emitter;
 
 use crate::analyze_blocks::{friendly_open_error, get_block_device_size_gb, normalize_device_path};
 
+const BLOCK_SIZE: usize = 32 * 1024 * 1024;
+/// How many leading bytes of a carved file are hashed for deduplication.
+const SAMPLE_SIZE: usize = 2 * 1024 * 1024;
+const FOUND_DIR: &str = "../found";
+/// Hard cap for a single carved MP4 (4 GB).
+const MAX_MP4_SIZE: u64 = 4 * 1024 * 1024 * 1024;
+
 /// All default signatures
-/// When `is_image`, it'll send the image as b64 to the frontend, and
-/// the file will not be saved in the disk. Otherwhise, it'll save into the disk
-/// and return the path to the frontend.
+/// When `is_image`, the file is validated + saved to disk and a base64
+/// thumbnail is sent to the frontend. Otherwise it is streamed to disk.
 pub struct MagicByte<'s> {
     signature: &'s [u8],
     end: &'s [u8],
@@ -34,6 +43,8 @@ pub struct MagicByte<'s> {
 #[derive(Serialize, Clone)]
 struct ImageFound {
     base64: String,
+    path: String,
+    size: f64,
 }
 
 #[derive(Serialize, Clone)]
@@ -54,11 +65,11 @@ pub async fn find_jpeg(app_handle: tauri::AppHandle, path: &str) -> Result<(), S
         signature: &[0xFF, 0xD8],
         end: &[0xFF, 0xD9],
         extension: "jpeg",
-        max_size: 500 * 1024 * 1024,
+        max_size: 64 * 1024 * 1024,
         name: "JPEG",
         is_image: true,
     }
-    .extract(app_handle, path, 300)
+    .extract(app_handle, path, i32::MAX)
 }
 
 #[tauri::command]
@@ -67,11 +78,11 @@ pub async fn find_png(app_handle: tauri::AppHandle, path: &str) -> Result<(), St
         signature: &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
         end: &[0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82],
         extension: "png",
-        max_size: 200 * 1024 * 1024,
+        max_size: 64 * 1024 * 1024,
         name: "PNG",
         is_image: true,
     }
-    .extract(app_handle, path, 300)
+    .extract(app_handle, path, i32::MAX)
 }
 
 #[tauri::command]
@@ -84,7 +95,7 @@ pub async fn find_pdf(app_handle: tauri::AppHandle, path: &str) -> Result<(), St
         name: "PDF",
         is_image: false,
     }
-    .extract(app_handle, path, 300)
+    .extract(app_handle, path, i32::MAX)
 }
 
 #[tauri::command]
@@ -97,7 +108,127 @@ pub async fn find_zip(app_handle: tauri::AppHandle, path: &str) -> Result<(), St
         name: "ZIP",
         is_image: false,
     }
-    .extract(app_handle, path, 300)
+    .extract(app_handle, path, i32::MAX)
+}
+
+/// Streaming sink used for PDF/ZIP: bytes go straight to a temp file so the
+/// scanner never holds the whole candidate in RAM.
+struct DiskSink {
+    tmp_path: String,
+    final_path: String,
+    size: u64,
+    end_window: VecDeque<u8>,
+    sample: Vec<u8>,
+}
+
+enum DiskFeed {
+    Ok,
+    /// Candidate aborted (write error or bigger than max_size).
+    Aborted,
+    /// End signature found and the file was finalized on disk.
+    Complete(String, u64, String), // final_path, size, dedup_key
+}
+
+/// Feeds one byte into the streaming (PDF/ZIP) sink.
+fn feed_disk(
+    disk: &mut Option<(BufWriter<File>, DiskSink)>,
+    b: u8,
+    end_sig: &[u8],
+    max_size: usize,
+) -> DiskFeed {
+    // Phase 1: write the byte and update the rolling window.
+    let (write_ok, size_now, end_matched) = {
+        let (writer, sink) = match disk.as_mut() {
+            Some(x) => x,
+            None => return DiskFeed::Aborted,
+        };
+
+        let write_ok = writer.write_all(&[b]).is_ok();
+        if write_ok {
+            sink.size += 1;
+            if sink.sample.len() < SAMPLE_SIZE {
+                sink.sample.push(b);
+            }
+            sink.end_window.push_back(b);
+            if sink.end_window.len() > end_sig.len() {
+                sink.end_window.pop_front();
+            }
+        }
+
+        let end_matched = write_ok
+            && sink.end_window.len() == end_sig.len()
+            && sink.end_window.iter().zip(end_sig.iter()).all(|(x, y)| x == y);
+
+        (write_ok, sink.size, end_matched)
+    };
+
+    if !write_ok || size_now > max_size as u64 {
+        if let Some((_, s)) = disk.take() {
+            let _ = fs::remove_file(&s.tmp_path);
+        }
+        return DiskFeed::Aborted;
+    }
+
+    if !end_matched {
+        return DiskFeed::Ok;
+    }
+
+    // Phase 2: close the temp file and promote it to its final name.
+    if let Some((writer, s)) = disk.take() {
+        let mut ok = writer.flush().is_ok();
+        drop(writer); // close the handle (required on Windows before rename)
+        if ok {
+            ok = fs::rename(&s.tmp_path, &s.final_path).is_ok();
+        }
+        if !ok {
+            let _ = fs::remove_file(&s.tmp_path);
+            return DiskFeed::Aborted;
+        }
+        let key = format!("{}:{}", s.size, digest(&s.sample));
+        return DiskFeed::Complete(s.final_path, s.size, key);
+    }
+
+    DiskFeed::Aborted
+}
+
+fn ensure_found_dir() {
+    let _ = fs::create_dir_all(FOUND_DIR);
+}
+
+/// Validates an image candidate, saves the full file to disk and returns a
+/// small JPEG thumbnail (base64) for the frontend preview grid.
+fn handle_image_candidate(mem: &[u8], extension: &str, count: i32) -> Option<ImageFound> {
+    use image::imageops::FilterType;
+    use image::io::Limits;
+    use image::{ImageFormat, ImageReader};
+    use std::io::Cursor;
+
+    // Decode with limits so a corrupted/huge carve cannot blow up RAM.
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+
+    let mut reader = ImageReader::new(Cursor::new(mem));
+    reader.set_limits(limits);
+    let img = reader.decode().ok()?;
+
+    // Small thumbnail for the UI (full image goes to disk, not to the UI).
+    let thumb = img.resize(256, 256, FilterType::Triangle).to_rgb8();
+    let mut thumb_bytes: Vec<u8> = Vec::new();
+    thumb
+        .write_to(&mut Cursor::new(&mut thumb_bytes), ImageFormat::Jpeg)
+        .ok()?;
+    let base64 = base64::engine::general_purpose::STANDARD.encode(&thumb_bytes);
+
+    let filename = format!("{FOUND_DIR}/{extension}_{count}.{extension}");
+    fs::write(&filename, mem).ok()?;
+
+    Some(ImageFound {
+        base64,
+        path: filename,
+        size: mem.len() as f64 / 1024.0,
+    })
 }
 
 impl<'s> MagicByte<'s> {
@@ -112,14 +243,18 @@ impl<'s> MagicByte<'s> {
 
         let total_size = get_block_device_size_gb(path).map_err(|e| e.to_string())?;
 
-        let mut buffer = vec![0u8; 32 * 1024 * 1024];
+        let mut buffer = vec![0u8; BLOCK_SIZE];
         let mut total_read: u64 = 0;
 
-        let mut file_buffer: Vec<u8> = Vec::new();
         let mut file_hash: HashSet<String> = HashSet::new();
 
         let mut searching_file = false;
         let mut sig_match_index = 0;
+
+        // Image candidates are buffered in memory (capped), everything else
+        // streams to a temp file on disk.
+        let mut mem_buffer: Vec<u8> = Vec::new();
+        let mut disk: Option<(BufWriter<File>, DiskSink)> = None;
 
         let mut count = 0;
 
@@ -146,62 +281,58 @@ impl<'s> MagicByte<'s> {
 
             for &b in buffer[..bytes_read].iter() {
                 if searching_file {
-                    file_buffer.push(b);
+                    if self.is_image {
+                        mem_buffer.push(b);
 
-                    if file_buffer.len() > self.max_size {
-                        searching_file = false;
-                        file_buffer.clear();
-                        continue;
-                    }
-                    if file_buffer.len() >= self.end.len()
-                        && file_buffer[file_buffer.len() - self.end.len()..] == *self.end
-                    {
-                        if self.is_image {
-                            if image::load_from_memory(&file_buffer).is_ok() {
-                                let hash = digest(&file_buffer);
-                                if file_hash.insert(hash.clone()) {
-                                    let base64 = base64::engine::general_purpose::STANDARD
-                                        .encode(&file_buffer);
-                                    count += 1;
-                                    app_handle
-                                        .emit("file-found", ImageFound { base64 })
-                                        .unwrap();
-                                }
-                            }
-                        } else {
-                            let hash = digest(&file_buffer);
-                            if file_hash.insert(hash.clone()) {
-                                let filename = format!(
-                                    "../found/{}_{count}.{}",
-                                    self.extension, self.extension
-                                );
-                                if let Some(parent) = std::path::Path::new(&filename).parent() {
-                                    let _ = fs::create_dir_all(parent);
-                                }
-                                match fs::write(&filename, &file_buffer) {
-                                    Ok(()) => {
-                                        app_handle
-                                            .emit(
-                                                "file-found",
-                                                FileFind {
-                                                    path: filename,
-                                                    size: file_buffer.len() as f64 / 1024.0,
-                                                },
-                                            )
-                                            .unwrap();
-
-                                        count += 1;
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error while saving {}: {}", filename, e);
-                                    }
-                                }
-                            }
+                        if mem_buffer.len() > self.max_size {
+                            searching_file = false;
+                            mem_buffer.clear();
+                            continue;
                         }
 
-                        searching_file = false;
-                        file_buffer.clear();
-                        sig_match_index = 0;
+                        if mem_buffer.len() >= self.end.len()
+                            && mem_buffer[mem_buffer.len() - self.end.len()..] == *self.end
+                        {
+                            let hash = digest(&mem_buffer);
+                            if file_hash.insert(hash.clone()) {
+                                if let Some(found) =
+                                    handle_image_candidate(&mem_buffer, self.extension, count)
+                                {
+                                    let _ = app_handle.emit("file-found", found);
+                                    count += 1;
+                                }
+                            }
+
+                            searching_file = false;
+                            mem_buffer.clear();
+                            sig_match_index = 0;
+                        }
+                        continue;
+                    }
+
+                    // ---- Disk-streamed candidate (PDF/ZIP) ----
+                    match feed_disk(&mut disk, b, self.end, self.max_size) {
+                        DiskFeed::Ok => {}
+                        DiskFeed::Aborted => {
+                            searching_file = false;
+                            sig_match_index = 0;
+                        }
+                        DiskFeed::Complete(final_path, size, key) => {
+                            if file_hash.insert(key) {
+                                let _ = app_handle.emit(
+                                    "file-found",
+                                    FileFind {
+                                        path: final_path,
+                                        size: size as f64 / 1024.0,
+                                    },
+                                );
+                                count += 1;
+                            } else {
+                                let _ = fs::remove_file(&final_path);
+                            }
+                            searching_file = false;
+                            sig_match_index = 0;
+                        }
                     }
                     continue;
                 }
@@ -210,9 +341,45 @@ impl<'s> MagicByte<'s> {
                     sig_match_index += 1;
                     if sig_match_index == self.signature.len() {
                         searching_file = true;
-                        file_buffer.clear();
-                        file_buffer.extend_from_slice(self.signature);
                         sig_match_index = 0;
+
+                        if self.is_image {
+                            mem_buffer.clear();
+                            mem_buffer.extend_from_slice(self.signature);
+                        } else {
+                            ensure_found_dir();
+                            let tmp_path =
+                                format!("{FOUND_DIR}/.tmp_{}_{}", self.extension, count);
+                            let final_path = format!(
+                                "{FOUND_DIR}/{}_{}.{}",
+                                self.extension, count, self.extension
+                            );
+                            match File::create(&tmp_path) {
+                                Ok(f) => {
+                                    let mut writer = BufWriter::new(f);
+                                    let _ = writer.write_all(self.signature);
+                                    let start_from = self
+                                        .signature
+                                        .len()
+                                        .saturating_sub(self.end.len());
+                                    disk = Some((
+                                        writer,
+                                        DiskSink {
+                                            tmp_path,
+                                            final_path,
+                                            size: self.signature.len() as u64,
+                                            end_window: self.signature[start_from..]
+                                                .to_vec()
+                                                .into(),
+                                            sample: self.signature.to_vec(),
+                                        },
+                                    ));
+                                }
+                                Err(_) => {
+                                    searching_file = false;
+                                }
+                            }
+                        }
                     }
                 } else {
                     sig_match_index = 0;
@@ -230,8 +397,219 @@ impl<'s> MagicByte<'s> {
                 .unwrap();
         }
 
+        // Incomplete candidate at EOF: discard it.
+        if let Some((writer, s)) = disk.take() {
+            drop(writer);
+            let _ = fs::remove_file(&s.tmp_path);
+        }
+
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// MP4 carving
+// ---------------------------------------------------------------------------
+//
+// MP4 files don't have an end signature: they are a chain of "boxes"
+// ([4-byte size][4-byte type][payload]). We locate the `ftyp` box, then walk
+// the box chain with seeks until the headers stop making sense — that's the
+// end of the video. The bytes are copied to disk in chunks, so RAM stays flat.
+
+/// Measures a candidate MP4 starting at `start` by walking its top-level
+/// boxes. Returns the total file length, or None if it isn't a valid MP4.
+fn measure_mp4(file: &mut File, start: u64) -> Option<u64> {
+    file.seek(SeekFrom::Start(start)).ok()?;
+
+    let mut total: u64 = 0;
+    let mut boxes = 0u32;
+    let mut saw_media = false;
+    let mut header = [0u8; 8];
+
+    loop {
+        // Device/file ended exactly after the last box: valid end.
+        if file.read_exact(&mut header).is_err() {
+            return if saw_media && total > 0 { Some(total) } else { None };
+        }
+
+        let mut size = u32::from_be_bytes(header[..4].try_into().unwrap()) as u64;
+        let typ: [u8; 4] = header[4..].try_into().unwrap();
+        let mut header_len: u64 = 8;
+
+        if size == 1 {
+            // 64-bit "largesize" box.
+            let mut big = [0u8; 8];
+            if file.read_exact(&mut big).is_err() {
+                return if saw_media && total > 0 { Some(total) } else { None };
+            }
+            size = u64::from_be_bytes(big);
+            header_len = 16;
+        } else if size == 0 {
+            // Box extends until EOF — we can't know where that is on a raw
+            // device, so treat the video as ending before this box.
+            return if saw_media && total > 0 { Some(total) } else { None };
+        }
+
+        let sane_size = size >= header_len && size <= MAX_MP4_SIZE && total + size <= MAX_MP4_SIZE;
+        let sane_type = typ
+            .iter()
+            .all(|&c| c.is_ascii_alphanumeric() || c == b' ');
+
+        if !sane_size || !sane_type || boxes > 10_000 {
+            // Headers stopped making sense: the video ended right before
+            // this box (the bytes after it belong to other data).
+            return if saw_media && total > 0 { Some(total) } else { None };
+        }
+
+        // The first box must be ftyp (we matched it), and a real video needs
+        // at least a moov or mdat box.
+        if boxes == 0 && typ != *b"ftyp" {
+            return None;
+        }
+        if typ == *b"moov" || typ == *b"mdat" {
+            saw_media = true;
+        }
+
+        total += size;
+        boxes += 1;
+
+        if file.seek(SeekFrom::Current((size - header_len) as i64)).is_err() {
+            return if saw_media && total > 0 { Some(total) } else { None };
+        }
+    }
+}
+
+/// Copies `len` bytes of the device starting at `start` into `dest`,
+/// streaming in 8 MB chunks. Returns a dedup key (size + hash of first 2 MB).
+fn copy_mp4(file: &mut File, start: u64, len: u64, dest: &str) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(start))?;
+
+    let mut out = BufWriter::new(File::create(dest)?);
+    let mut buf = vec![0u8; 8 * 1024 * 1024];
+    let mut sample: Vec<u8> = Vec::new();
+    let mut left = len;
+
+    while left > 0 {
+        let want = (left as usize).min(buf.len());
+        let r = file.read(&mut buf[..want])?;
+        if r == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated video",
+            ));
+        }
+        if sample.len() < SAMPLE_SIZE {
+            let take = r.min(SAMPLE_SIZE - sample.len());
+            sample.extend_from_slice(&buf[..take]);
+        }
+        out.write_all(&buf[..r])?;
+        left -= r as u64;
+    }
+
+    out.flush()?;
+    Ok(format!("{}:{}", len, digest(&sample)))
+}
+
+pub fn extract_mp4(app_handle: tauri::AppHandle, path: &str, max: i32) -> Result<(), String> {
+    let open_path = normalize_device_path(path);
+    let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
+
+    let total_size = get_block_device_size_gb(path).map_err(|e| e.to_string())?;
+
+    let mut buffer = vec![0u8; BLOCK_SIZE];
+    let mut base: u64 = 0; // absolute offset of buffer[0]
+    let mut count = 0i32;
+    let mut found: HashSet<String> = HashSet::new();
+
+    app_handle
+        .emit(
+            "file-progress",
+            Progress {
+                current: 0.0,
+                total: total_size,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    'outer: loop {
+        let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+
+        let mut resume: Option<u64> = None;
+        let mut i = 0usize;
+
+        while i + 4 <= n {
+            if &buffer[i..i + 4] == b"ftyp" {
+                let abs = base + i as u64; // absolute offset of the 'f'
+                if abs >= 4 {
+                    let start = abs - 4; // box header begins 4 bytes earlier
+                    if let Some(len) = measure_mp4(&mut file, start) {
+                        ensure_found_dir();
+                        let out_path = format!("{FOUND_DIR}/mp4_{count}.mp4");
+                        match copy_mp4(&mut file, start, len, &out_path) {
+                            Ok(key) => {
+                                if found.insert(key) {
+                                    let _ = app_handle.emit(
+                                        "file-found",
+                                        FileFind {
+                                            path: out_path,
+                                            size: len as f64 / 1024.0,
+                                        },
+                                    );
+                                    count += 1;
+                                    if count >= max {
+                                        break 'outer;
+                                    }
+                                    // Skip past the carved video and keep scanning.
+                                    resume = Some(start + len);
+                                    break;
+                                } else {
+                                    // Duplicate video: discard and move on.
+                                    let _ = fs::remove_file(&out_path);
+                                    i += 4;
+                                    continue;
+                                }
+                            }
+                            Err(_) => {
+                                let _ = fs::remove_file(&out_path);
+                                i += 4;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                i += 1;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Position for the next read: right after a carved video, or slightly
+        // overlapping so a signature spanning two buffers is not missed.
+        let next_pos = resume.unwrap_or_else(|| (base + n as u64).saturating_sub(3));
+        file.seek(SeekFrom::Start(next_pos))
+            .map_err(|e| e.to_string())?;
+        base = next_pos;
+
+        app_handle
+            .emit(
+                "file-progress",
+                Progress {
+                    current: base as f64 / 1024.0 / 1024.0,
+                    total: total_size,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn find_mp4(app_handle: tauri::AppHandle, path: &str) -> Result<(), String> {
+    extract_mp4(app_handle, path, i32::MAX)
 }
 
 #[tauri::command]
@@ -242,7 +620,7 @@ pub async fn find_txt(
     blacklist: Vec<String>,
 ) -> Result<(), String> {
     println!("wordlist: {:?} \n blacklist:{:?}", wordlist, blacklist);
-    extract_txt(app_handle, path, 300, wordlist, blacklist)
+    extract_txt(app_handle, path, i32::MAX, wordlist, blacklist)
 }
 
 #[derive(Serialize, Clone)]
@@ -257,15 +635,11 @@ pub fn extract_txt(
     wordlist: Vec<String>,
     blacklist: Vec<String>,
 ) -> Result<(), String> {
-    use std::collections::HashSet;
-    use std::fs::File;
-    use std::io::Read;
-
     let open_path = normalize_device_path(path);
     let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
     let total_size = get_block_device_size_gb(path).map_err(|e| e.to_string())?;
 
-    let mut buffer = vec![0u8; 32 * 1024 * 1024]; // 32 MB buffer
+    let mut buffer = vec![0u8; BLOCK_SIZE]; // 32 MB buffer
     let mut total_read: u64 = 0;
     let mut text_buffer: Vec<u8> = Vec::new(); // incremental text buffer
     let mut count = 0;

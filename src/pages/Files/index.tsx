@@ -28,7 +28,7 @@ export default function Files() {
   const queryParams = new URLSearchParams(search);
 
   const id = queryParams.get("id");
-  const type = queryParams.get("type") as "pdf" | "zip";
+  const type = queryParams.get("type") as "pdf" | "zip" | "mp4";
 
   const [loadingScan, setLoadingScan] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +62,7 @@ export default function Files() {
     setError(null);
     setLoadingScan(true);
     try {
-      const invokeName = type === "pdf" ? "find_pdf" : "find_zip";
+      const invokeName = type === "pdf" ? "find_pdf" : type === "mp4" ? "find_mp4" : "find_zip";
       await invoke(invokeName, { path: id });
     } catch (err) {
       console.error("Error starting scan:", err);
@@ -103,8 +103,8 @@ export default function Files() {
           <div className="filesGrid">
             {files.map(({path, size}, index) => (
               <div key={index}>
-                {type == "pdf" ? <PDFIcon /> : <WinrarIcon />}
-                <h1>{(size / 1024).toFixed(2)} KB</h1>
+                {type == "pdf" ? <PDFIcon /> : type == "mp4" ? <div style={{fontSize: 48}}>📹</div> : <WinrarIcon />}
+                <h1>{(size / 1024).toFixed(2)} MB</h1>
                 <p>{path}</p>
               </div>
             ))}

@@ -67,6 +67,7 @@ jobs:
             ## Rscovery v__VERSION__
 
             Aplicativo de recuperação de arquivos por magic bytes, feito com Tauri (Rust + React).
+            Recupera JPEG, PNG, PDF, ZIP, vídeos MP4 e textos, sem limite de arquivos.
 
             ### 📦 Downloads
 

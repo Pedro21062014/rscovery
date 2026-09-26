@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Recuperação de arquivos por <em>magic bytes</em>, feita em Rust + Tauri.</strong><br/>
-  Escaneia discos bloco a bloco e recupera JPEG, PNG, PDF, ZIP e textos — mesmo sem sistema de arquivos.
+  Escaneia discos bloco a bloco e recupera JPEG, PNG, PDF, ZIP, vídeos MP4 e textos — mesmo sem sistema de arquivos.
 </p>
 
 <p align="center">
@@ -40,8 +40,9 @@
 | Recurso | Descrição |
 |---|---|
 | 🔍 **Scan de blocos** | Lê o disco inteiro em blocos de 32 MB e mostra um mapa visual das áreas com dados |
-| 🖼️ **Recuperar imagens** | JPEG e PNG (pré-visualização direto no app) |
-| 📄 **Recuperar documentos** | PDF e ZIP salvos em disco |
+| 🖼️ **Recuperar imagens** | JPEG e PNG, sem limite de quantidade — salvas em disco com pré-visualização por thumbnails |
+| 📄 **Recuperar documentos** | PDF e ZIP salvos em disco (gravação em streaming, sem pesar a RAM) |
+| 📹 **Recuperar vídeos** | MP4 por carving da estrutura de boxes (`ftyp`/`moov`/`mdat`) |
 | ✏️ **Recuperar textos** | Busca trechos de texto usando wordlist/blacklist personalizáveis |
 | 💽 **Multiplataforma** | Linux, macOS e Windows |
 
