@@ -15,6 +15,7 @@ export default function Text() {
 
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
+  const [finished, setFinished] = useState<null | number>(null);
 
   const [wordlist, setWordlist] = useState("");
   const [blacklist, setBlacklist] = useState("");
@@ -46,11 +47,17 @@ export default function Text() {
       setTotal(progress.total);
     });
 
+    const unlistenFinished = listen<{ found: number }>("scan-finished", (event) => {
+      setFinished(event.payload.found);
+      setLoadingScan(false);
+    });
+
     return () => {
       unmountedRef.current = true;
       unlistenStarted.then((f) => f());
       unlistenFound.then((f) => f());
       unlistedProgress.then((f) => f());
+      unlistenFinished.then((f) => f());
       // Leaving the page stops only the scan this page started.
       if (scanIdRef.current !== null) {
         invoke("stop_scan", { id: scanIdRef.current }).catch(() => {});
@@ -64,6 +71,7 @@ export default function Text() {
     setTexts([]);
     setProgress(0);
     setTotal(0);
+    setFinished(null);
     setLoadingScan(true);
     try {
       const invokeName = "find_txt";
@@ -127,12 +135,20 @@ export default function Text() {
         </div>
       )}
 
-      {loadingScan ? (
+      {loadingScan || texts.length > 0 || finished !== null ? (
         <div>
           <p>
-            {(progress / 1024).toFixed(2)}/{(total / 1024).toFixed(2)} (
-            {texts.length})
+            {(progress / 1024).toFixed(2)}/{(total / 1024).toFixed(2)} GB (
+            {texts.length} found)
           </p>
+
+          {!loadingScan && finished !== null && !error && (
+            <p style={{ color: "#4ade80", fontWeight: 500 }}>
+              ✅ Scan finished — {texts.length}{" "}
+              {texts.length === 1 ? "text recovered" : "texts recovered"}.
+            </p>
+          )}
+
           <div className="textGrid">
             {texts.map((text, index) => (
               <div key={index}>
@@ -140,6 +156,12 @@ export default function Text() {
               </div>
             ))}
           </div>
+
+          {!loadingScan && (
+            <div style={{ marginTop: "16px", textAlign: "center" }}>
+              <button onClick={handleStartScan}>Scan again</button>
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ marginTop: "24px", textAlign: "center" }}>

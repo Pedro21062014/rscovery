@@ -216,5 +216,17 @@ fn analyze_blocks_sync(
     }
 
     println!("Reading completed.");
+    if !flag.load(Ordering::Relaxed) {
+        #[derive(Serialize, Clone)]
+        struct ScanFinished {
+            found: i32,
+        }
+        let _ = app_handle.emit(
+            "scan-finished",
+            ScanFinished {
+                found: non_empty.len() as i32,
+            },
+        );
+    }
     Ok(())
 }

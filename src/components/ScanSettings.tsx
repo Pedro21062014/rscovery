@@ -121,6 +121,27 @@ export default function ScanSettings({
           </span>
         </label>
       )}
+
+      <div style={{ marginTop: 14, textAlign: "right" }}>
+        <button
+          onClick={() => {
+            setOutputDir("");
+            if (setFilterThumbs !== undefined) setFilterThumbs(false);
+            localStorage.removeItem("rscovery:outputDir");
+            localStorage.removeItem("rscovery:filterThumbs");
+          }}
+          style={{
+            fontSize: 12,
+            padding: "6px 12px",
+            background: "transparent",
+            border: "1px solid rgb(108, 108, 108)",
+            color: "rgb(200, 200, 200)",
+            borderRadius: 6,
+          }}
+        >
+          ↺ Reset to defaults
+        </button>
+      </div>
     </div>
   );
 }

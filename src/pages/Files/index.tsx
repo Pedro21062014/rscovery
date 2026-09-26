@@ -37,6 +37,7 @@ export default function Files() {
 
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
+  const [finished, setFinished] = useState<null | number>(null);
 
   // Scan settings (beta) — persisted between sessions.
   const [outputDir, setOutputDir] = useState(
@@ -75,12 +76,17 @@ export default function Files() {
       setTotal(progress.total);
     });
 
+    const unlistenFinished = listen<{ found: number }>("scan-finished", (event) => {
+      setFinished(event.payload.found);
+      setLoadingScan(false);
+    });
 
     return () => {
       unmountedRef.current = true;
       unlistenStarted.then((f) => f());
       unlistenFound.then((f) => f());
       unlistenProgress.then((f) => f());
+      unlistenFinished.then((f) => f());
       // Leaving the page stops only the scan this page started.
       if (scanIdRef.current !== null) {
         invoke("stop_scan", { id: scanIdRef.current }).catch(() => {});
@@ -94,6 +100,7 @@ export default function Files() {
     setFiles([]);
     setProgress(0);
     setTotal(0);
+    setFinished(null);
     setLoadingScan(true);
     try {
       const invokeName = type === "pdf" ? "find_pdf" : type === "mp4" ? "find_mp4" : "find_zip";
@@ -129,11 +136,19 @@ export default function Files() {
         </div>
       )}
 
-      {loadingScan ? (
+      {loadingScan || files.length > 0 || finished !== null ? (
         <div>
           <p>
-            {(progress / 1024).toFixed(2)}/{(total / 1024).toFixed(2)} ({files.length})
-        </p>
+            {(progress / 1024).toFixed(2)}/{(total / 1024).toFixed(2)} GB ({files.length} found)
+          </p>
+
+          {!loadingScan && finished !== null && !error && (
+            <p style={{ color: "#4ade80", fontWeight: 500 }}>
+              ✅ Scan finished — {files.length}{" "}
+              {files.length === 1 ? "file recovered" : "files recovered"}.
+            </p>
+          )}
+
           <div className="filesGrid">
             {files.map(({path, size}, index) => (
               <div key={index}>
@@ -143,6 +158,12 @@ export default function Files() {
               </div>
             ))}
           </div>
+
+          {!loadingScan && (
+            <div style={{ marginTop: "16px", textAlign: "center" }}>
+              <button onClick={handleStartScan}>Scan again</button>
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ marginTop: "24px", textAlign: "center" }}>

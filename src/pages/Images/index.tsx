@@ -27,6 +27,7 @@ export default function Images() {
 
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
+  const [finished, setFinished] = useState<null | number>(null);
 
   // Scan settings (beta) — persisted between sessions.
   const [outputDir, setOutputDir] = useState(
@@ -70,11 +71,17 @@ export default function Images() {
       setTotal(progress.total);
     });
 
+    const unlistenFinished = listen<{ found: number }>("scan-finished", (event) => {
+      setFinished(event.payload.found);
+      setLoadingScan(false);
+    });
+
     return () => {
       unmountedRef.current = true;
       unlistenStarted.then((f) => f());
       unlistenFound.then((f) => f());
       unlistenProgress.then((f) => f());
+      unlistenFinished.then((f) => f());
       // Leaving the page stops only the scan this page started.
       if (scanIdRef.current !== null) {
         invoke("stop_scan", { id: scanIdRef.current }).catch(() => {});
@@ -88,6 +95,7 @@ export default function Images() {
     setImages([]);
     setProgress(0);
     setTotal(0);
+    setFinished(null);
     setLoadingScan(true);
     try {
       const invokeName = type === "jpeg" ? "find_jpeg" : "find_png";
@@ -129,12 +137,35 @@ export default function Images() {
         </div>
       )}
 
-      {loadingScan ? (
+      {loadingScan || images.length > 0 || finished !== null ? (
         <div>
           <p>
             {(progress / 1024).toFixed(2)}/{(total / 1024).toFixed(2)} GB (
             {images.length} found)
           </p>
+
+          {!loadingScan && finished !== null && !error && (
+            <p style={{ color: "#4ade80", fontWeight: 500 }}>
+              ✅ Scan finished — {images.length}{" "}
+              {images.length === 1 ? "image recovered" : "images recovered"}.
+            </p>
+          )}
+
+          {images.some((img) => img.path === "") && (
+            <div
+              style={{
+                background: "#3a2a12",
+                border: "1px solid #f59e0b",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                marginTop: "8px",
+              }}
+            >
+              ⚠️ Some images were found but could <b>not be saved</b> to the
+              output folder. Check the folder in the scan settings (or run the
+              app as administrator) and try again.
+            </div>
+          )}
 
           {images.length > 0 && (
             <p style={{ fontSize: 13, color: "rgb(180, 180, 180)" }}>
@@ -162,7 +193,7 @@ export default function Images() {
             </p>
           )}
 
-          {images.length > 0 && (
+          {images.length > 0 && images[0].path !== "" && (
             <p
               style={{
                 fontSize: 13,
@@ -172,6 +203,12 @@ export default function Images() {
             >
               📁 Saved to: {images[0].path}
             </p>
+          )}
+
+          {!loadingScan && (
+            <div style={{ marginTop: "16px", textAlign: "center" }}>
+              <button onClick={handleStartScan}>Scan again</button>
+            </div>
           )}
         </div>
       ) : (

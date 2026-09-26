@@ -61,6 +61,11 @@ struct Progress {
     total: f64,
 }
 
+#[derive(Serialize, Clone)]
+struct ScanFinished {
+    found: i32,
+}
+
 #[tauri::command]
 pub async fn find_jpeg(
     app_handle: tauri::AppHandle,
@@ -252,20 +257,30 @@ fn feed_disk(
 }
 
 /// Resolves where the recovered files go: the folder chosen by the user,
-/// or the default `found` folder next to the app.
+/// or the default `found` folder next to the app. Fails fast (with a clear
+/// message) if the folder can't be created or is not writable — otherwise
+/// every recovered file would be silently discarded.
 fn resolve_output_dir(output_dir: Option<&str>) -> Result<String, String> {
-    match output_dir {
-        Some(d) if !d.trim().is_empty() => {
-            fs::create_dir_all(d).map_err(|e| {
-                format!("Could not create the output folder '{}': {}", d, e)
-            })?;
-            Ok(d.to_string())
-        }
-        _ => {
-            let _ = fs::create_dir_all(FOUND_DIR);
-            Ok(FOUND_DIR.to_string())
-        }
-    }
+    let dir = match output_dir {
+        Some(d) if !d.trim().is_empty() => d.to_string(),
+        _ => FOUND_DIR.to_string(),
+    };
+
+    fs::create_dir_all(&dir).map_err(|e| {
+        format!("Could not create the output folder '{}': {}", dir, e)
+    })?;
+
+    // Probe: make sure the folder is actually writable before scanning.
+    let probe = format!("{dir}/.rscovery_probe");
+    fs::write(&probe, b"ok").map_err(|e| {
+        format!(
+            "The output folder '{}' is not writable ({}). Choose another folder in the scan settings.",
+            dir, e
+        )
+    })?;
+    let _ = fs::remove_file(&probe);
+
+    Ok(dir)
 }
 
 /// Validates an image candidate, saves the full file to disk and returns a
@@ -308,11 +323,22 @@ fn handle_image_candidate(
     let base64 = base64::engine::general_purpose::STANDARD.encode(&thumb_bytes);
 
     let filename = format!("{out_dir}/{extension}_{count}.{extension}");
-    fs::write(&filename, mem).ok()?;
+    // Never silently discard a recovered photo: if the write fails we still
+    // surface the image to the UI (with an empty path) so the user is warned.
+    let path = match fs::write(&filename, mem) {
+        Ok(()) => filename,
+        Err(e) => {
+            eprintln!(
+                "rscovery: failed to save {} ({}) — reporting it unsaved",
+                filename, e
+            );
+            String::new()
+        }
+    };
 
     Some(ImageFound {
         base64,
-        path: filename,
+        path,
         size: mem.len() as f64 / 1024.0,
     })
 }
@@ -512,6 +538,10 @@ impl<'s> MagicByte<'s> {
         if let Some((writer, s)) = disk.take() {
             drop(writer);
             let _ = fs::remove_file(&s.tmp_path);
+        }
+
+        if !flag.load(Ordering::Relaxed) {
+            let _ = app_handle.emit("scan-finished", ScanFinished { found: count });
         }
 
         Ok(())
@@ -726,6 +756,10 @@ pub fn extract_mp4(
             .map_err(|e| e.to_string())?;
     }
 
+    if !flag.load(Ordering::Relaxed) {
+        let _ = app_handle.emit("scan-finished", ScanFinished { found: count });
+    }
+
     Ok(())
 }
 
@@ -876,6 +910,10 @@ pub fn extract_txt(
                 let _ = app_handle.emit("text-found", TextFound { text: text.clone() });
             }
         }
+    }
+
+    if !flag.load(Ordering::Relaxed) {
+        let _ = app_handle.emit("scan-finished", ScanFinished { found: count });
     }
 
     Ok(())
