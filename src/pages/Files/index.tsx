@@ -65,11 +65,17 @@ export default function Files() {
     return () => {
       unlistenFound.then((f) => f());
       unlistenProgress.then((f) => f());
+      // Leaving the page stops any scan in progress.
+      invoke("stop_scan").catch(() => {});
     };
   }, []);
 
   const handleStartScan = async () => {
     setError(null);
+    // Fresh scan: reset progress/results.
+    setFiles([]);
+    setProgress(0);
+    setTotal(0);
     setLoadingScan(true);
     try {
       const invokeName = type === "pdf" ? "find_pdf" : type === "mp4" ? "find_mp4" : "find_zip";

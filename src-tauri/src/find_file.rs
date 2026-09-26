@@ -13,6 +13,8 @@
 use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use base64::Engine;
 use serde::Serialize;
@@ -62,83 +64,107 @@ struct Progress {
 #[tauri::command]
 pub async fn find_jpeg(
     app_handle: tauri::AppHandle,
-    path: &str,
+    path: String,
     output_dir: Option<String>,
     min_dim: Option<u32>,
 ) -> Result<(), String> {
-    MagicByte {
-        signature: &[0xFF, 0xD8],
-        end: &[0xFF, 0xD9],
-        extension: "jpeg",
-        max_size: 64 * 1024 * 1024,
-        name: "JPEG",
-        is_image: true,
-    }
-    .extract(
-        app_handle,
-        path,
-        i32::MAX,
-        output_dir.as_deref(),
-        min_dim.unwrap_or(0),
-    )
+    let flag = crate::begin_scan(&app_handle);
+    let min_dim = min_dim.unwrap_or(0);
+    tauri::async_runtime::spawn_blocking(move || {
+        MagicByte {
+            signature: &[0xFF, 0xD8],
+            end: &[0xFF, 0xD9],
+            extension: "jpeg",
+            max_size: 64 * 1024 * 1024,
+            name: "JPEG",
+            is_image: true,
+        }
+        .extract(
+            app_handle,
+            &path,
+            i32::MAX,
+            output_dir.as_deref(),
+            min_dim,
+            flag,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn find_png(
     app_handle: tauri::AppHandle,
-    path: &str,
+    path: String,
     output_dir: Option<String>,
     min_dim: Option<u32>,
 ) -> Result<(), String> {
-    MagicByte {
-        signature: &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
-        end: &[0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82],
-        extension: "png",
-        max_size: 64 * 1024 * 1024,
-        name: "PNG",
-        is_image: true,
-    }
-    .extract(
-        app_handle,
-        path,
-        i32::MAX,
-        output_dir.as_deref(),
-        min_dim.unwrap_or(0),
-    )
+    let flag = crate::begin_scan(&app_handle);
+    let min_dim = min_dim.unwrap_or(0);
+    tauri::async_runtime::spawn_blocking(move || {
+        MagicByte {
+            signature: &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+            end: &[0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82],
+            extension: "png",
+            max_size: 64 * 1024 * 1024,
+            name: "PNG",
+            is_image: true,
+        }
+        .extract(
+            app_handle,
+            &path,
+            i32::MAX,
+            output_dir.as_deref(),
+            min_dim,
+            flag,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn find_pdf(
     app_handle: tauri::AppHandle,
-    path: &str,
+    path: String,
     output_dir: Option<String>,
 ) -> Result<(), String> {
-    MagicByte {
-        signature: &[0x25, 0x50, 0x44, 0x46, 0x2D],
-        end: &[0x25, 0x25, 0x45, 0x4F, 0x46],
-        extension: "pdf",
-        max_size: 500 * 1024 * 1024,
-        name: "PDF",
-        is_image: false,
-    }
-    .extract(app_handle, path, i32::MAX, output_dir.as_deref(), 0)
+    let flag = crate::begin_scan(&app_handle);
+    tauri::async_runtime::spawn_blocking(move || {
+        MagicByte {
+            signature: &[0x25, 0x50, 0x44, 0x46, 0x2D],
+            end: &[0x25, 0x25, 0x45, 0x4F, 0x46],
+            extension: "pdf",
+            max_size: 500 * 1024 * 1024,
+            name: "PDF",
+            is_image: false,
+        }
+        .extract(app_handle, &path, i32::MAX, output_dir.as_deref(), 0, flag)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn find_zip(
     app_handle: tauri::AppHandle,
-    path: &str,
+    path: String,
     output_dir: Option<String>,
 ) -> Result<(), String> {
-    MagicByte {
-        signature: &[0x50, 0x4B, 0x03, 0x04],
-        end: &[0x50, 0x4B, 0x05, 0x06],
-        extension: "zip",
-        max_size: 500 * 1024 * 1024,
-        name: "ZIP",
-        is_image: false,
-    }
-    .extract(app_handle, path, i32::MAX, output_dir.as_deref(), 0)
+    let flag = crate::begin_scan(&app_handle);
+    tauri::async_runtime::spawn_blocking(move || {
+        MagicByte {
+            signature: &[0x50, 0x4B, 0x03, 0x04],
+            end: &[0x50, 0x4B, 0x05, 0x06],
+            extension: "zip",
+            max_size: 500 * 1024 * 1024,
+            name: "ZIP",
+            is_image: false,
+        }
+        .extract(app_handle, &path, i32::MAX, output_dir.as_deref(), 0, flag)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Streaming sink used for PDF/ZIP: bytes go straight to a temp file so the
@@ -295,6 +321,7 @@ impl<'s> MagicByte<'s> {
         max: i32,
         output_dir: Option<&str>,
         min_dim: u32,
+        flag: Arc<AtomicBool>,
     ) -> Result<(), String> {
         let open_path = normalize_device_path(path);
         let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
@@ -328,6 +355,11 @@ impl<'s> MagicByte<'s> {
             .unwrap();
 
         loop {
+            // Cancelled (new scan started, user left the page or pressed stop).
+            if flag.load(Ordering::Relaxed) {
+                break;
+            }
+
             let bytes_read = file.read(&mut buffer).map_err(|e| e.to_string())?;
             if bytes_read == 0 {
                 break;
@@ -338,7 +370,14 @@ impl<'s> MagicByte<'s> {
                 break;
             }
 
-            for &b in buffer[..bytes_read].iter() {
+            let mut cancelled = false;
+            for (idx, &b) in buffer[..bytes_read].iter().enumerate() {
+                // Check the flag once every 64 KB (cheap, keeps the scan responsive).
+                if idx % 65536 == 0 && flag.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
+                }
+
                 if searching_file {
                     if self.is_image {
                         mem_buffer.push(b);
@@ -448,15 +487,21 @@ impl<'s> MagicByte<'s> {
                 }
             }
 
-            app_handle
-                .emit(
-                    "file-progress",
-                    Progress {
-                        current: total_read as f64 / 1024.0 / 1024.0,
-                        total: total_size,
-                    },
-                )
-                .unwrap();
+            if cancelled {
+                break;
+            }
+
+            if !flag.load(Ordering::Relaxed) {
+                app_handle
+                    .emit(
+                        "file-progress",
+                        Progress {
+                            current: total_read as f64 / 1024.0 / 1024.0,
+                            total: total_size,
+                        },
+                    )
+                    .unwrap();
+            }
         }
 
         // Incomplete candidate at EOF: discard it.
@@ -577,6 +622,7 @@ pub fn extract_mp4(
     path: &str,
     max: i32,
     output_dir: Option<&str>,
+    flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let open_path = normalize_device_path(path);
     let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
@@ -600,6 +646,11 @@ pub fn extract_mp4(
         .map_err(|e| e.to_string())?;
 
     'outer: loop {
+        // Cancelled (new scan started, user left the page or pressed stop).
+        if flag.load(Ordering::Relaxed) {
+            break;
+        }
+
         let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
@@ -677,21 +728,31 @@ pub fn extract_mp4(
 #[tauri::command]
 pub async fn find_mp4(
     app_handle: tauri::AppHandle,
-    path: &str,
+    path: String,
     output_dir: Option<String>,
 ) -> Result<(), String> {
-    extract_mp4(app_handle, path, i32::MAX, output_dir.as_deref())
+    let flag = crate::begin_scan(&app_handle);
+    tauri::async_runtime::spawn_blocking(move || {
+        extract_mp4(app_handle, &path, i32::MAX, output_dir.as_deref(), flag)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn find_txt(
     app_handle: tauri::AppHandle,
-    path: &str,
+    path: String,
     wordlist: Vec<String>,
     blacklist: Vec<String>,
 ) -> Result<(), String> {
     println!("wordlist: {:?} \n blacklist:{:?}", wordlist, blacklist);
-    extract_txt(app_handle, path, i32::MAX, wordlist, blacklist)
+    let flag = crate::begin_scan(&app_handle);
+    tauri::async_runtime::spawn_blocking(move || {
+        extract_txt(app_handle, &path, i32::MAX, wordlist, blacklist, flag)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Clone)]
@@ -705,6 +766,7 @@ pub fn extract_txt(
     max: i32,
     wordlist: Vec<String>,
     blacklist: Vec<String>,
+    flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let open_path = normalize_device_path(path);
     let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
@@ -730,13 +792,24 @@ pub fn extract_txt(
     );
 
     loop {
+        // Cancelled (new scan started, user left the page or pressed stop).
+        if flag.load(Ordering::Relaxed) {
+            break;
+        }
+
         let bytes_read = file.read(&mut buffer).map_err(|e| e.to_string())?;
         if bytes_read == 0 {
             break;
         }
         total_read += bytes_read as u64;
 
-        for &b in &buffer[..bytes_read] {
+        let mut cancelled = false;
+        for (idx, &b) in buffer[..bytes_read].iter().enumerate() {
+            if idx % 65536 == 0 && flag.load(Ordering::Relaxed) {
+                cancelled = true;
+                break;
+            }
+
             if b == 0x09 || b == 0x0A || b == 0x0D || (0x20..=0x7E).contains(&b) {
                 text_buffer.push(b);
                 // 64 KB
@@ -768,14 +841,20 @@ pub fn extract_txt(
             }
         }
 
+        if cancelled {
+            break;
+        }
+
         // emit progress
-        let _ = app_handle.emit(
-            "file-progress",
-            Progress {
-                current: total_read as f64 / 1024.0 / 1024.0,
-                total: total_size,
-            },
-        );
+        if !flag.load(Ordering::Relaxed) {
+            let _ = app_handle.emit(
+                "file-progress",
+                Progress {
+                    current: total_read as f64 / 1024.0 / 1024.0,
+                    total: total_size,
+                },
+            );
+        }
     }
 
     if text_buffer.len() >= 32 {

@@ -35,11 +35,17 @@ export default function Text() {
     return () => {
       unlistenFound.then((f) => f());
       unlistedProgress.then((f) => f());
+      // Leaving the page stops any scan in progress.
+      invoke("stop_scan").catch(() => {});
     };
   }, []);
 
   const handleStartScan = async () => {
     setError(null);
+    // Fresh scan: reset progress/results.
+    setTexts([]);
+    setProgress(0);
+    setTotal(0);
     setLoadingScan(true);
     try {
       const invokeName = "find_txt";

@@ -1,5 +1,7 @@
 use serde::Serialize;
 use sysinfo::Disks;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader};
 
@@ -10,6 +12,34 @@ mod find_file;
 pub struct DiskInfo {
     name: String,
     size: u64,
+}
+
+/// Keeps track of the currently running scan so it can be cancelled when the
+/// user starts another scan, leaves the page, or asks to stop.
+pub struct ScanState {
+    pub cancel: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+/// Cancels the previous scan (if any), registers a new one and returns its
+/// cancellation flag. The scan loops check this flag while reading.
+pub fn begin_scan(app_handle: &tauri::AppHandle) -> Arc<AtomicBool> {
+    use tauri::Manager;
+
+    let flag = Arc::new(AtomicBool::new(false));
+    let state = app_handle.state::<ScanState>();
+    let mut current = state.cancel.lock().unwrap();
+    if let Some(old) = current.as_ref() {
+        old.store(true, Ordering::Relaxed);
+    }
+    *current = Some(flag.clone());
+    flag
+}
+
+#[tauri::command]
+fn stop_scan(state: tauri::State<ScanState>) {
+    if let Some(flag) = state.cancel.lock().unwrap().as_ref() {
+        flag.store(true, Ordering::Relaxed);
+    }
 }
 
 

@@ -59,11 +59,17 @@ export default function Images() {
     return () => {
       unlistenFound.then((f) => f());
       unlistenProgress.then((f) => f());
+      // Leaving the page stops any scan in progress.
+      invoke("stop_scan").catch(() => {});
     };
   }, []);
 
   const handleStartScan = async () => {
     setError(null);
+    // Fresh scan: reset progress/results.
+    setImages([]);
+    setProgress(0);
+    setTotal(0);
     setLoadingScan(true);
     try {
       const invokeName = type === "jpeg" ? "find_jpeg" : "find_png";

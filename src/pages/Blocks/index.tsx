@@ -44,11 +44,15 @@ export default function Blocks() {
 
     return () => {
       unlistenProgress.then((f) => f());
+      // Leaving the page stops any scan in progress.
+      invoke("stop_scan").catch(() => {});
     };
   }, []);
 
   const handleStartScan = async () => {
     setError(null);
+    // Fresh scan: reset progress/results.
+    setScannedSize({ current: 0, total: 0, nonEmpty: [] });
     setLoadingScan(true);
     try {
       await invoke("analyze_blocks", { path: id });

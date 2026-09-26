@@ -1,5 +1,7 @@
 use std::fs::File;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::Emitter;
 
 use serde::Serialize;
@@ -156,7 +158,20 @@ pub fn check_root() -> bool {
 }
 
 #[tauri::command]
-pub async fn analyze_blocks(app_handle: tauri::AppHandle, path: &str) -> Result<(), String> {
+pub async fn analyze_blocks(app_handle: tauri::AppHandle, path: String) -> Result<(), String> {
+    let flag = crate::begin_scan(&app_handle);
+    // Runs on a blocking thread so the heavy read loop never starves the
+    // async runtime (keeps the UI/events responsive).
+    tauri::async_runtime::spawn_blocking(move || analyze_blocks_sync(app_handle, &path, flag))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn analyze_blocks_sync(
+    app_handle: tauri::AppHandle,
+    path: &str,
+    flag: Arc<AtomicBool>,
+) -> Result<(), String> {
     let open_path = normalize_device_path(path);
     let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
 
@@ -169,6 +184,12 @@ pub async fn analyze_blocks(app_handle: tauri::AppHandle, path: &str) -> Result<
     let mut non_empty: Vec<i32> = Vec::new();
 
     loop {
+        // Cancelled (new scan started, user left the page or pressed stop).
+        if flag.load(Ordering::Relaxed) {
+            println!("Scan cancelled.");
+            return Ok(());
+        }
+
         let bytes_read = file.read(&mut buffer).map_err(|e| e.to_string())?;
         if bytes_read == 0 {
             break;
@@ -188,7 +209,9 @@ pub async fn analyze_blocks(app_handle: tauri::AppHandle, path: &str) -> Result<
         };
 
         println!("Progresso: {:.2} MB", &progress.current);
-        app_handle.emit("scan-progress", progress).unwrap();
+        if !flag.load(Ordering::Relaxed) {
+            app_handle.emit("scan-progress", progress).unwrap();
+        }
     }
 
     println!("Reading completed.");
