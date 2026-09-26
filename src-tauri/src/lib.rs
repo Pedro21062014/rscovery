@@ -1,5 +1,6 @@
 use serde::Serialize;
 use sysinfo::Disks;
+#[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader};
 
 mod analyze_blocks;
@@ -41,6 +42,7 @@ fn list_disks() -> Vec<DiskInfo> {
             let mount = disk.mount_point().to_string_lossy().to_string();
             let size_mb = disk.total_space() / 1024 / 1024;
 
+            // Em Linux, mapeia o ponto de montagem para o dispositivo (ex.: /dev/sda1)
             #[cfg(target_os = "linux")]
             let device = {
                 if let Some((dev, _mp)) = mounts.iter().find(|(_dev, mp)| mp == &mount) {
@@ -57,6 +59,13 @@ fn list_disks() -> Vec<DiskInfo> {
                         mount.clone()
                     }
                 }
+            };
+
+            // Em Windows/macOS, usa o nome do volume/disco (com fallback para o ponto de montagem)
+            #[cfg(not(target_os = "linux"))]
+            let device = {
+                let name = disk.name().to_string_lossy().to_string();
+                if name.is_empty() { mount.clone() } else { name }
             };
 
             DiskInfo {
