@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -30,7 +30,21 @@ export default function Blocks() {
   console.log({nonEmptyBlocks});
 
 
+  // Token of the scan started by THIS page (used to stop exactly that scan).
+  const scanIdRef = useRef<number | null>(null);
+  const unmountedRef = useRef(false);
+
   useEffect(() => {
+    unmountedRef.current = false;
+
+    const unlistenStarted = listen<{ id: number }>("scan-started", (event) => {
+      scanIdRef.current = event.payload.id;
+      // Page closed before the token arrived: stop the scan right away.
+      if (unmountedRef.current) {
+        invoke("stop_scan", { id: event.payload.id }).catch(() => {});
+      }
+    });
+
     const unlistenProgress = listen("scan-progress", (event) => {
       const progress = event.payload as ScannedData;
       console.log(progress)
@@ -43,9 +57,13 @@ export default function Blocks() {
 
 
     return () => {
+      unmountedRef.current = true;
+      unlistenStarted.then((f) => f());
       unlistenProgress.then((f) => f());
-      // Leaving the page stops any scan in progress.
-      invoke("stop_scan").catch(() => {});
+      // Leaving the page stops only the scan this page started.
+      if (scanIdRef.current !== null) {
+        invoke("stop_scan", { id: scanIdRef.current }).catch(() => {});
+      }
     };
   }, []);
 

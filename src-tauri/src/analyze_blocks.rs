@@ -159,7 +159,8 @@ pub fn check_root() -> bool {
 
 #[tauri::command]
 pub async fn analyze_blocks(app_handle: tauri::AppHandle, path: String) -> Result<(), String> {
-    let flag = crate::begin_scan(&app_handle);
+    let (scan_id, flag) = crate::begin_scan(&app_handle);
+    crate::announce_scan(&app_handle, scan_id);
     // Runs on a blocking thread so the heavy read loop never starves the
     // async runtime (keeps the UI/events responsive).
     tauri::async_runtime::spawn_blocking(move || analyze_blocks_sync(app_handle, &path, flag))

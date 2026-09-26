@@ -14,30 +14,53 @@ pub struct DiskInfo {
     size: u64,
 }
 
-/// Keeps track of the currently running scan so it can be cancelled when the
-/// user starts another scan, leaves the page, or asks to stop.
+/// Keeps track of the running scans. Each scan registers its own
+/// cancellation flag under a token, so a scan can only ever be stopped by
+/// whoever knows its token (never by unrelated mount/unmount cycles).
 pub struct ScanState {
-    pub cancel: Mutex<Option<Arc<AtomicBool>>>,
+    pub scans: Mutex<std::collections::HashMap<u32, Arc<AtomicBool>>>,
+    pub next_id: Mutex<u32>,
 }
 
-/// Cancels the previous scan (if any), registers a new one and returns its
-/// cancellation flag. The scan loops check this flag while reading.
-pub fn begin_scan(app_handle: &tauri::AppHandle) -> Arc<AtomicBool> {
+/// Registers a new scan (cancelling any previous one) and returns
+/// (its token, its cancellation flag). The scan loops check the flag.
+pub fn begin_scan(app_handle: &tauri::AppHandle) -> (u32, Arc<AtomicBool>) {
     use tauri::Manager;
 
-    let flag = Arc::new(AtomicBool::new(false));
     let state = app_handle.state::<ScanState>();
-    let mut current = state.cancel.lock().unwrap();
-    if let Some(old) = current.as_ref() {
+    let flag = Arc::new(AtomicBool::new(false));
+
+    let mut next_id = state.next_id.lock().unwrap();
+    let id = *next_id;
+    *next_id = next_id.wrapping_add(1);
+
+    let mut scans = state.scans.lock().unwrap();
+    // Starting a new scan cancels any scan still running.
+    for old in scans.values() {
         old.store(true, Ordering::Relaxed);
     }
-    *current = Some(flag.clone());
-    flag
+    scans.clear();
+    scans.insert(id, flag.clone());
+
+    (id, flag)
 }
 
+/// Tells the frontend the token of the scan that just started, so the page
+/// can cancel exactly that scan when it unmounts.
+pub fn announce_scan(app_handle: &tauri::AppHandle, id: u32) {
+    use tauri::Emitter;
+
+    #[derive(serde::Serialize, Clone)]
+    struct ScanStarted {
+        id: u32,
+    }
+    let _ = app_handle.emit("scan-started", ScanStarted { id });
+}
+
+/// Cancels and unregisters the scan identified by `id` (no-op for unknown ids).
 #[tauri::command]
-fn stop_scan(state: tauri::State<ScanState>) {
-    if let Some(flag) = state.cancel.lock().unwrap().as_ref() {
+fn stop_scan(state: tauri::State<ScanState>, id: u32) {
+    if let Some(flag) = state.scans.lock().unwrap().remove(&id) {
         flag.store(true, Ordering::Relaxed);
     }
 }
@@ -132,8 +155,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(ScanState {
+            scans: Mutex::new(std::collections::HashMap::new()),
+            next_id: Mutex::new(0),
+        })
         .invoke_handler(tauri::generate_handler![
             list_disks,
+            stop_scan,
             analyze_blocks::check_root,
             analyze_blocks::analyze_blocks,
             find_file::find_jpeg,

@@ -68,7 +68,8 @@ pub async fn find_jpeg(
     output_dir: Option<String>,
     min_dim: Option<u32>,
 ) -> Result<(), String> {
-    let flag = crate::begin_scan(&app_handle);
+    let (scan_id, flag) = crate::begin_scan(&app_handle);
+    crate::announce_scan(&app_handle, scan_id);
     let min_dim = min_dim.unwrap_or(0);
     tauri::async_runtime::spawn_blocking(move || {
         MagicByte {
@@ -99,7 +100,8 @@ pub async fn find_png(
     output_dir: Option<String>,
     min_dim: Option<u32>,
 ) -> Result<(), String> {
-    let flag = crate::begin_scan(&app_handle);
+    let (scan_id, flag) = crate::begin_scan(&app_handle);
+    crate::announce_scan(&app_handle, scan_id);
     let min_dim = min_dim.unwrap_or(0);
     tauri::async_runtime::spawn_blocking(move || {
         MagicByte {
@@ -129,7 +131,8 @@ pub async fn find_pdf(
     path: String,
     output_dir: Option<String>,
 ) -> Result<(), String> {
-    let flag = crate::begin_scan(&app_handle);
+    let (scan_id, flag) = crate::begin_scan(&app_handle);
+    crate::announce_scan(&app_handle, scan_id);
     tauri::async_runtime::spawn_blocking(move || {
         MagicByte {
             signature: &[0x25, 0x50, 0x44, 0x46, 0x2D],
@@ -151,7 +154,8 @@ pub async fn find_zip(
     path: String,
     output_dir: Option<String>,
 ) -> Result<(), String> {
-    let flag = crate::begin_scan(&app_handle);
+    let (scan_id, flag) = crate::begin_scan(&app_handle);
+    crate::announce_scan(&app_handle, scan_id);
     tauri::async_runtime::spawn_blocking(move || {
         MagicByte {
             signature: &[0x50, 0x4B, 0x03, 0x04],
@@ -731,7 +735,8 @@ pub async fn find_mp4(
     path: String,
     output_dir: Option<String>,
 ) -> Result<(), String> {
-    let flag = crate::begin_scan(&app_handle);
+    let (scan_id, flag) = crate::begin_scan(&app_handle);
+    crate::announce_scan(&app_handle, scan_id);
     tauri::async_runtime::spawn_blocking(move || {
         extract_mp4(app_handle, &path, i32::MAX, output_dir.as_deref(), flag)
     })
@@ -747,7 +752,8 @@ pub async fn find_txt(
     blacklist: Vec<String>,
 ) -> Result<(), String> {
     println!("wordlist: {:?} \n blacklist:{:?}", wordlist, blacklist);
-    let flag = crate::begin_scan(&app_handle);
+    let (scan_id, flag) = crate::begin_scan(&app_handle);
+    crate::announce_scan(&app_handle, scan_id);
     tauri::async_runtime::spawn_blocking(move || {
         extract_txt(app_handle, &path, i32::MAX, wordlist, blacklist, flag)
     })
