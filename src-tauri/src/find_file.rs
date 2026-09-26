@@ -174,7 +174,7 @@ fn feed_disk(
     }
 
     // Phase 2: close the temp file and promote it to its final name.
-    if let Some((writer, s)) = disk.take() {
+    if let Some((mut writer, s)) = disk.take() {
         let mut ok = writer.flush().is_ok();
         drop(writer); // close the handle (required on Windows before rename)
         if ok {

@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Read;
 use tauri::Emitter;
 
@@ -20,7 +20,7 @@ struct Progress {
 #[cfg(target_os = "linux")]
 pub fn get_block_device_size_gb(device: &str) -> std::io::Result<f64> {
     let path = format!("/sys/class/block/{}/size", device.replace("/dev/", ""));
-    let blocks: u64 = fs::read_to_string(path)?
+    let blocks: u64 = std::fs::read_to_string(path)?
         .trim()
         .parse()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
