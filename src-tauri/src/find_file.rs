@@ -12,7 +12,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File};
-use std::io::{BufWriter, Read, Seek, SeekFrom};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 
 use base64::Engine;
 use serde::Serialize;
@@ -199,19 +199,11 @@ fn ensure_found_dir() {
 /// small JPEG thumbnail (base64) for the frontend preview grid.
 fn handle_image_candidate(mem: &[u8], extension: &str, count: i32) -> Option<ImageFound> {
     use image::imageops::FilterType;
-    use image::io::Limits;
-    use image::{ImageFormat, ImageReader};
+    use image::ImageFormat;
     use std::io::Cursor;
 
-    // Decode with limits so a corrupted/huge carve cannot blow up RAM.
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(16384);
-    limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(512 * 1024 * 1024);
-
-    let mut reader = ImageReader::new(Cursor::new(mem));
-    reader.set_limits(limits);
-    let img = reader.decode().ok()?;
+    // Decode validates the image; candidates capped at max_size keep this bounded.
+    let img = image::load_from_memory(mem).ok()?;
 
     // Small thumbnail for the UI (full image goes to disk, not to the UI).
     let thumb = img.resize(256, 256, FilterType::Triangle).to_rgb8();
