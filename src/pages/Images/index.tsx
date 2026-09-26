@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import ScanSettings from "../../components/ScanSettings";
 
 interface ImagePayload {
   base64: string; // small thumbnail (the full file is saved on disk)
@@ -27,6 +28,22 @@ export default function Images() {
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
 
+  // Scan settings (beta) — persisted between sessions.
+  const [outputDir, setOutputDir] = useState(
+    () => localStorage.getItem("rscovery:outputDir") ?? ""
+  );
+  const [filterThumbs, setFilterThumbs] = useState(
+    () => localStorage.getItem("rscovery:filterThumbs") === "1"
+  );
+
+  useEffect(() => {
+    localStorage.setItem("rscovery:outputDir", outputDir);
+  }, [outputDir]);
+
+  useEffect(() => {
+    localStorage.setItem("rscovery:filterThumbs", filterThumbs ? "1" : "0");
+  }, [filterThumbs]);
+
   useEffect(() => {
     const unlistenFound = listen("file-found", (event) => {
       const payload = event.payload as ImagePayload;
@@ -50,7 +67,11 @@ export default function Images() {
     setLoadingScan(true);
     try {
       const invokeName = type === "jpeg" ? "find_jpeg" : "find_png";
-      await invoke(invokeName, { path: id });
+      await invoke(invokeName, {
+        path: id,
+        outputDir: outputDir.trim() || null,
+        minDim: filterThumbs ? 256 : null,
+      });
     } catch (err) {
       console.error("Error starting scan:", err);
       setError(String(err));
@@ -131,6 +152,12 @@ export default function Images() {
         </div>
       ) : (
         <div style={{ marginTop: "24px", textAlign: "center" }}>
+          <ScanSettings
+            outputDir={outputDir}
+            setOutputDir={setOutputDir}
+            filterThumbs={filterThumbs}
+            setFilterThumbs={setFilterThumbs}
+          />
           <button onClick={handleStartScan}>Start Scan</button>
         </div>
       )}

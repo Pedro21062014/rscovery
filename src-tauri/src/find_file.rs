@@ -60,7 +60,12 @@ struct Progress {
 }
 
 #[tauri::command]
-pub async fn find_jpeg(app_handle: tauri::AppHandle, path: &str) -> Result<(), String> {
+pub async fn find_jpeg(
+    app_handle: tauri::AppHandle,
+    path: &str,
+    output_dir: Option<String>,
+    min_dim: Option<u32>,
+) -> Result<(), String> {
     MagicByte {
         signature: &[0xFF, 0xD8],
         end: &[0xFF, 0xD9],
@@ -69,11 +74,22 @@ pub async fn find_jpeg(app_handle: tauri::AppHandle, path: &str) -> Result<(), S
         name: "JPEG",
         is_image: true,
     }
-    .extract(app_handle, path, i32::MAX)
+    .extract(
+        app_handle,
+        path,
+        i32::MAX,
+        output_dir.as_deref(),
+        min_dim.unwrap_or(0),
+    )
 }
 
 #[tauri::command]
-pub async fn find_png(app_handle: tauri::AppHandle, path: &str) -> Result<(), String> {
+pub async fn find_png(
+    app_handle: tauri::AppHandle,
+    path: &str,
+    output_dir: Option<String>,
+    min_dim: Option<u32>,
+) -> Result<(), String> {
     MagicByte {
         signature: &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
         end: &[0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82],
@@ -82,11 +98,21 @@ pub async fn find_png(app_handle: tauri::AppHandle, path: &str) -> Result<(), St
         name: "PNG",
         is_image: true,
     }
-    .extract(app_handle, path, i32::MAX)
+    .extract(
+        app_handle,
+        path,
+        i32::MAX,
+        output_dir.as_deref(),
+        min_dim.unwrap_or(0),
+    )
 }
 
 #[tauri::command]
-pub async fn find_pdf(app_handle: tauri::AppHandle, path: &str) -> Result<(), String> {
+pub async fn find_pdf(
+    app_handle: tauri::AppHandle,
+    path: &str,
+    output_dir: Option<String>,
+) -> Result<(), String> {
     MagicByte {
         signature: &[0x25, 0x50, 0x44, 0x46, 0x2D],
         end: &[0x25, 0x25, 0x45, 0x4F, 0x46],
@@ -95,11 +121,15 @@ pub async fn find_pdf(app_handle: tauri::AppHandle, path: &str) -> Result<(), St
         name: "PDF",
         is_image: false,
     }
-    .extract(app_handle, path, i32::MAX)
+    .extract(app_handle, path, i32::MAX, output_dir.as_deref(), 0)
 }
 
 #[tauri::command]
-pub async fn find_zip(app_handle: tauri::AppHandle, path: &str) -> Result<(), String> {
+pub async fn find_zip(
+    app_handle: tauri::AppHandle,
+    path: &str,
+    output_dir: Option<String>,
+) -> Result<(), String> {
     MagicByte {
         signature: &[0x50, 0x4B, 0x03, 0x04],
         end: &[0x50, 0x4B, 0x05, 0x06],
@@ -108,7 +138,7 @@ pub async fn find_zip(app_handle: tauri::AppHandle, path: &str) -> Result<(), St
         name: "ZIP",
         is_image: false,
     }
-    .extract(app_handle, path, i32::MAX)
+    .extract(app_handle, path, i32::MAX, output_dir.as_deref(), 0)
 }
 
 /// Streaming sink used for PDF/ZIP: bytes go straight to a temp file so the
@@ -191,19 +221,53 @@ fn feed_disk(
     DiskFeed::Aborted
 }
 
-fn ensure_found_dir() {
-    let _ = fs::create_dir_all(FOUND_DIR);
+/// Resolves where the recovered files go: the folder chosen by the user,
+/// or the default `found` folder next to the app.
+fn resolve_output_dir(output_dir: Option<&str>) -> Result<String, String> {
+    match output_dir {
+        Some(d) if !d.trim().is_empty() => {
+            fs::create_dir_all(d).map_err(|e| {
+                format!("Could not create the output folder '{}': {}", d, e)
+            })?;
+            Ok(d.to_string())
+        }
+        _ => {
+            let _ = fs::create_dir_all(FOUND_DIR);
+            Ok(FOUND_DIR.to_string())
+        }
+    }
 }
 
 /// Validates an image candidate, saves the full file to disk and returns a
 /// small JPEG thumbnail (base64) for the frontend preview grid.
-fn handle_image_candidate(mem: &[u8], extension: &str, count: i32) -> Option<ImageFound> {
+///
+/// `min_dim` > 0 enables the "filter thumbnails" option: candidates smaller
+/// than min_dim pixels on either side (or smaller than 10 KB) are skipped,
+/// so only real images are recovered.
+fn handle_image_candidate(
+    mem: &[u8],
+    extension: &str,
+    count: i32,
+    out_dir: &str,
+    min_dim: u32,
+) -> Option<ImageFound> {
     use image::imageops::FilterType;
     use image::ImageFormat;
     use std::io::Cursor;
 
+    // Tiny candidates are almost certainly OS/browser thumbnails — skip them
+    // early without spending time decoding.
+    if min_dim > 0 && mem.len() < 10 * 1024 {
+        return None;
+    }
+
     // Decode validates the image; candidates capped at max_size keep this bounded.
     let img = image::load_from_memory(mem).ok()?;
+
+    // Filter out small images (thumbnails) when the option is enabled.
+    if min_dim > 0 && (img.width() < min_dim || img.height() < min_dim) {
+        return None;
+    }
 
     // Small thumbnail for the UI (full image goes to disk, not to the UI).
     let thumb = img.resize(256, 256, FilterType::Triangle).to_rgb8();
@@ -213,7 +277,7 @@ fn handle_image_candidate(mem: &[u8], extension: &str, count: i32) -> Option<Ima
         .ok()?;
     let base64 = base64::engine::general_purpose::STANDARD.encode(&thumb_bytes);
 
-    let filename = format!("{FOUND_DIR}/{extension}_{count}.{extension}");
+    let filename = format!("{out_dir}/{extension}_{count}.{extension}");
     fs::write(&filename, mem).ok()?;
 
     Some(ImageFound {
@@ -229,11 +293,14 @@ impl<'s> MagicByte<'s> {
         app_handle: tauri::AppHandle,
         path: &str,
         max: i32,
+        output_dir: Option<&str>,
+        min_dim: u32,
     ) -> Result<(), String> {
         let open_path = normalize_device_path(path);
         let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
 
         let total_size = get_block_device_size_gb(path).map_err(|e| e.to_string())?;
+        let out_dir = resolve_output_dir(output_dir)?;
 
         let mut buffer = vec![0u8; BLOCK_SIZE];
         let mut total_read: u64 = 0;
@@ -287,9 +354,13 @@ impl<'s> MagicByte<'s> {
                         {
                             let hash = digest(&mem_buffer);
                             if file_hash.insert(hash.clone()) {
-                                if let Some(found) =
-                                    handle_image_candidate(&mem_buffer, self.extension, count)
-                                {
+                                if let Some(found) = handle_image_candidate(
+                                    &mem_buffer,
+                                    self.extension,
+                                    count,
+                                    &out_dir,
+                                    min_dim,
+                                ) {
                                     let _ = app_handle.emit("file-found", found);
                                     count += 1;
                                 }
@@ -339,11 +410,10 @@ impl<'s> MagicByte<'s> {
                             mem_buffer.clear();
                             mem_buffer.extend_from_slice(self.signature);
                         } else {
-                            ensure_found_dir();
                             let tmp_path =
-                                format!("{FOUND_DIR}/.tmp_{}_{}", self.extension, count);
+                                format!("{out_dir}/.tmp_{}_{}", self.extension, count);
                             let final_path = format!(
-                                "{FOUND_DIR}/{}_{}.{}",
+                                "{out_dir}/{}_{}.{}",
                                 self.extension, count, self.extension
                             );
                             match File::create(&tmp_path) {
@@ -502,11 +572,17 @@ fn copy_mp4(file: &mut File, start: u64, len: u64, dest: &str) -> std::io::Resul
     Ok(format!("{}:{}", len, digest(&sample)))
 }
 
-pub fn extract_mp4(app_handle: tauri::AppHandle, path: &str, max: i32) -> Result<(), String> {
+pub fn extract_mp4(
+    app_handle: tauri::AppHandle,
+    path: &str,
+    max: i32,
+    output_dir: Option<&str>,
+) -> Result<(), String> {
     let open_path = normalize_device_path(path);
     let mut file = File::open(&open_path).map_err(|e| friendly_open_error(&e, path))?;
 
     let total_size = get_block_device_size_gb(path).map_err(|e| e.to_string())?;
+    let out_dir = resolve_output_dir(output_dir)?;
 
     let mut buffer = vec![0u8; BLOCK_SIZE];
     let mut base: u64 = 0; // absolute offset of buffer[0]
@@ -538,8 +614,7 @@ pub fn extract_mp4(app_handle: tauri::AppHandle, path: &str, max: i32) -> Result
                 if abs >= 4 {
                     let start = abs - 4; // box header begins 4 bytes earlier
                     if let Some(len) = measure_mp4(&mut file, start) {
-                        ensure_found_dir();
-                        let out_path = format!("{FOUND_DIR}/mp4_{count}.mp4");
+                        let out_path = format!("{out_dir}/mp4_{count}.mp4");
                         match copy_mp4(&mut file, start, len, &out_path) {
                             Ok(key) => {
                                 if found.insert(key) {
@@ -600,8 +675,12 @@ pub fn extract_mp4(app_handle: tauri::AppHandle, path: &str, max: i32) -> Result
 }
 
 #[tauri::command]
-pub async fn find_mp4(app_handle: tauri::AppHandle, path: &str) -> Result<(), String> {
-    extract_mp4(app_handle, path, i32::MAX)
+pub async fn find_mp4(
+    app_handle: tauri::AppHandle,
+    path: &str,
+    output_dir: Option<String>,
+) -> Result<(), String> {
+    extract_mp4(app_handle, path, i32::MAX, output_dir.as_deref())
 }
 
 #[tauri::command]

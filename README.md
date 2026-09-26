@@ -41,6 +41,7 @@
 |---|---|
 | 🔍 **Scan de blocos** | Lê o disco inteiro em blocos de 32 MB e mostra um mapa visual das áreas com dados |
 | 🖼️ **Recuperar imagens** | JPEG e PNG, sem limite de quantidade — salvas em disco com pré-visualização por thumbnails |
+| ⚙️ **Configurações de scan** *(beta)* | Escolha a pasta de destino dos arquivos e filtre thumbnails para recuperar só imagens reais |
 | 📄 **Recuperar documentos** | PDF e ZIP salvos em disco (gravação em streaming, sem pesar a RAM) |
 | 📹 **Recuperar vídeos** | MP4 por carving da estrutura de boxes (`ftyp`/`moov`/`mdat`) |
 | ✏️ **Recuperar textos** | Busca trechos de texto usando wordlist/blacklist personalizáveis |

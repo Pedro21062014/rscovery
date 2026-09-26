@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import ScanSettings from "../../components/ScanSettings";
 
 interface FilePayload {
   size: number,
@@ -37,6 +38,15 @@ export default function Files() {
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
 
+  // Scan settings (beta) — persisted between sessions.
+  const [outputDir, setOutputDir] = useState(
+    () => localStorage.getItem("rscovery:outputDir") ?? ""
+  );
+
+  useEffect(() => {
+    localStorage.setItem("rscovery:outputDir", outputDir);
+  }, [outputDir]);
+
   useEffect(() => {
     const unlistenFound = listen("file-found", (event) => {
       const progress = event.payload as FilePayload;
@@ -63,7 +73,7 @@ export default function Files() {
     setLoadingScan(true);
     try {
       const invokeName = type === "pdf" ? "find_pdf" : type === "mp4" ? "find_mp4" : "find_zip";
-      await invoke(invokeName, { path: id });
+      await invoke(invokeName, { path: id, outputDir: outputDir.trim() || null });
     } catch (err) {
       console.error("Error starting scan:", err);
       setError(String(err));
@@ -112,6 +122,7 @@ export default function Files() {
         </div>
       ) : (
         <div style={{ marginTop: "24px", textAlign: "center" }}>
+          <ScanSettings outputDir={outputDir} setOutputDir={setOutputDir} />
           <button onClick={handleStartScan}>Start Scan</button>
         </div>
       )}
